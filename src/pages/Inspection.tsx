@@ -1,10 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
-  Search,
   Filter,
   Calendar,
   MapPin,
-  User,
+  User as UserIcon,
   CheckCircle2,
   Circle,
   Image as ImageIcon,
@@ -28,25 +27,43 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import StatusBadge from '@/components/common/StatusBadge';
-import { inspectionTasks, workOrders, users } from '@/mock/data';
-import type { WorkOrder as WorkOrderType, InspectionTask as InspectionTaskType } from '@/types';
+import {
+  useInspectionStore,
+  type InspectionTask as StoreInspectionTask,
+  type WorkOrder as StoreWorkOrder,
+} from '@/stores/inspectionStore';
+import { authApi, inspectionApi } from '@/lib/api';
+import type { User } from '@/types';
 
 type InspectionTab = 'tasks' | 'workorders' | 'detail';
 
-interface ExtendedInspectionTask extends InspectionTaskType {
+interface ExtendedInspectionTask extends StoreInspectionTask {
   inspectorName: string;
+  date: string;
+  checkPoints: (StoreInspectionTask['checkPoints'][number] & {
+    checkTime?: number | null;
+    photos: string[];
+  })[];
 }
 
-interface ExtendedWorkOrder extends WorkOrderType {
+interface ExtendedWorkOrder extends Omit<StoreWorkOrder, 'photos'> {
   reporterName: string;
   assigneeName: string;
   overdueHours: number;
   autoUpgraded: boolean;
+  location: string;
+  photos: string[];
+  repairPhotos: string[];
+  closedAt: number | null;
+  upgradeCount: number;
 }
 
 const typeLabels: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   leak: { label: '漏损', icon: <Droplets size={14} />, color: 'text-water-cyan' },
+  device: { label: '设备', icon: <Wrench size={14} />, color: 'text-water-orange' },
   equipment: { label: '设备', icon: <Wrench size={14} />, color: 'text-water-orange' },
+  sewage: { label: '污水', icon: <MoreHorizontal size={14} />, color: 'text-water-purple' },
+  meter: { label: '水表', icon: <MoreHorizontal size={14} />, color: 'text-water-purple' },
   other: { label: '其他', icon: <MoreHorizontal size={14} />, color: 'text-water-purple' },
 };
 
@@ -61,10 +78,10 @@ const statusLabels: Record<string, { label: string; type: 'pending' | 'processin
   pending: { label: '待接单', type: 'pending' },
   assigned: { label: '已指派', type: 'warning' },
   processing: { label: '处理中', type: 'processing' },
+  completed: { label: '已完成', type: 'completed' },
   upgraded: { label: '已升级', type: 'alarm' },
   closed: { label: '已关闭', type: 'completed' },
   in_progress: { label: '进行中', type: 'processing' },
-  completed: { label: '已完成', type: 'completed' },
   overdue: { label: '已超时', type: 'alarm' },
 };
 
@@ -73,18 +90,34 @@ function formatTimestamp(ts: number): string {
   return `${d.getMonth() + 1}-${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+function formatDate(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+}
+
 function getOverdueHours(createdAt: number): number {
   return Math.floor((Date.now() - createdAt) / 3600000);
 }
 
-function getUserName(userId: string): string {
+function getUserName(users: User[], userId?: string): string {
+  if (!userId) return '-';
   return users.find((u) => u.id === userId)?.name || '-';
 }
 
 export default function Inspection() {
   const [activeTab, setActiveTab] = useState<InspectionTab>('tasks');
-  const [selectedWorkOrderId, setSelectedWorkOrderId] = useState<string | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+
+  const {
+    tasks,
+    workOrders,
+    fetchAll,
+    selectWorkOrder,
+    selectedWorkOrderId,
+    completeWorkOrder,
+    upgradeWorkOrder,
+  } = useInspectionStore();
 
   const [taskDateFilter, setTaskDateFilter] = useState<string>('');
   const [taskAreaFilter, setTaskAreaFilter] = useState<string>('');
@@ -93,25 +126,47 @@ export default function Inspection() {
   const [woPriorityFilter, setWoPriorityFilter] = useState<string>('');
   const [woStatusFilter, setWoStatusFilter] = useState<string>('');
 
+  useEffect(() => {
+    fetchAll();
+    authApi.getUsers().then((res) => {
+      if (res.success && res.data) {
+        setUsers(res.data as User[]);
+      }
+    });
+  }, [fetchAll]);
+
   const extendedTasks = useMemo<ExtendedInspectionTask[]>(() => {
-    return inspectionTasks.map((t) => ({
+    return tasks.map((t) => ({
       ...t,
-      inspectorName: getUserName(t.inspectorId),
+      inspectorName: getUserName(users, t.inspectorId),
+      date: formatDate(t.createdAt),
+      checkPoints: t.checkPoints.map((cp) => ({
+        ...cp,
+        checkTime: cp.checkedAt ?? null,
+        photos: cp.photoUrl ? [cp.photoUrl] : [],
+      })),
     }));
-  }, []);
+  }, [tasks, users]);
 
   const extendedWorkOrders = useMemo<ExtendedWorkOrder[]>(() => {
     return workOrders.map((wo) => {
       const overdue = getOverdueHours(wo.createdAt);
+      const beforePhotos = wo.photos?.before || [];
+      const afterPhotos = wo.photos?.after || [];
       return {
         ...wo,
-        reporterName: getUserName(wo.reporterId),
-        assigneeName: wo.assigneeId ? getUserName(wo.assigneeId) : '-',
+        reporterName: getUserName(users, wo.reporterId),
+        assigneeName: getUserName(users, wo.assigneeId),
         overdueHours: overdue,
-        autoUpgraded: overdue > 48,
+        autoUpgraded: overdue > 48 || !!wo.upgradedTo,
+        location: wo.area,
+        photos: beforePhotos,
+        repairPhotos: afterPhotos,
+        closedAt: wo.completedAt ?? null,
+        upgradeCount: wo.upgradedTo ? 1 : 0,
       };
     });
-  }, []);
+  }, [workOrders, users]);
 
   const filteredTasks = useMemo(() => {
     return extendedTasks.filter((t) => {
@@ -144,6 +199,29 @@ export default function Inspection() {
     { key: 'detail', label: '工单详情' },
   ];
 
+  const handleAcceptWorkOrder = async (id: string) => {
+    const res = await inspectionApi.updateWorkOrder(id, { status: 'assigned' });
+    if (res.success) {
+      useInspectionStore.getState().fetchWorkOrders();
+    }
+  };
+
+  const handleStartProcessing = async (id: string) => {
+    const res = await inspectionApi.updateWorkOrder(id, { status: 'processing' });
+    if (res.success) {
+      useInspectionStore.getState().fetchWorkOrders();
+    }
+  };
+
+  const handleUpgradeWorkOrder = async (id: string) => {
+    await upgradeWorkOrder(id, '手动升级处理');
+  };
+
+  const handleCloseWorkOrder = async (id: string) => {
+    const wo = extendedWorkOrders.find((w) => w.id === id);
+    await completeWorkOrder(id, wo?.photos, wo?.repairPhotos);
+  };
+
   return (
     <div className="h-full flex flex-col gap-4 p-4 overflow-auto">
       <div className="flex items-center justify-between">
@@ -164,7 +242,7 @@ export default function Inspection() {
             key={tab.key}
             onClick={() => {
               setActiveTab(tab.key);
-              if (tab.key !== 'detail') setSelectedWorkOrderId(null);
+              if (tab.key !== 'detail') selectWorkOrder('');
             }}
             className={cn(
               'px-5 py-2.5 rounded-lg text-sm font-medium transition-all duration-300 relative',
@@ -176,7 +254,7 @@ export default function Inspection() {
             {tab.label}
             {tab.key === 'workorders' && (
               <span className="ml-2 px-1.5 py-0.5 rounded-full bg-water-orange/20 text-water-orange text-[10px] border border-water-orange/30">
-                {extendedWorkOrders.filter((wo) => wo.status !== 'closed').length}
+                {extendedWorkOrders.filter((wo) => wo.status !== 'closed' && wo.status !== 'completed').length}
               </span>
             )}
             {activeTab === tab.key && (
@@ -188,7 +266,7 @@ export default function Inspection() {
           <button
             onClick={() => {
               setActiveTab('workorders');
-              setSelectedWorkOrderId(null);
+              selectWorkOrder('');
             }}
             className="ml-auto flex items-center gap-1 text-sm text-water-cyan hover:text-water-teal transition-colors"
           >
@@ -274,7 +352,7 @@ export default function Inspection() {
                         </div>
                         <div>
                           <div className="font-semibold text-white text-sm">
-                            {task.area}巡检任务
+                            {task.title || `${task.area}巡检任务`}
                           </div>
                           <div className="flex items-center gap-3 mt-1 text-xs text-slate-400">
                             <span className="flex items-center gap-1">
@@ -299,7 +377,7 @@ export default function Inspection() {
 
                     <div className="flex items-center gap-3 mb-2">
                       <div className="flex items-center gap-1 text-xs text-slate-400">
-                        <User size={11} />
+                        <UserIcon size={11} />
                         <span>巡线员: {task.inspectorName}</span>
                       </div>
                     </div>
@@ -405,6 +483,7 @@ export default function Inspection() {
                   <option value="processing">处理中</option>
                   <option value="upgraded">已升级</option>
                   <option value="closed">已关闭</option>
+                  <option value="completed">已完成</option>
                 </select>
               </div>
               <div className="ml-auto text-sm text-slate-400">
@@ -424,7 +503,7 @@ export default function Inspection() {
                   key={wo.id}
                   className="glass-card rounded-xl overflow-hidden flex transition-all duration-300 hover:border-water-cyan/30 cursor-pointer"
                   onClick={() => {
-                    setSelectedWorkOrderId(wo.id);
+                    selectWorkOrder(wo.id);
                     setActiveTab('detail');
                   }}
                 >
@@ -459,11 +538,11 @@ export default function Inspection() {
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
-                          <User size={10} />
+                          <UserIcon size={10} />
                           上报: {wo.reporterName}
                         </span>
                         <span className="flex items-center gap-1">
-                          <User size={10} />
+                          <UserIcon size={10} />
                           处理: {wo.assigneeName}
                         </span>
                       </div>
@@ -479,7 +558,7 @@ export default function Inspection() {
                         timeLeft <= 12 ? 'text-water-red' : timeLeft <= 24 ? 'text-water-orange' : 'text-slate-400',
                       )}>
                         <Clock3 size={11} />
-                        {wo.status === 'closed' ? (
+                        {wo.status === 'closed' || wo.status === 'completed' ? (
                           <span>已完成</span>
                         ) : (
                           <span>
@@ -495,7 +574,10 @@ export default function Inspection() {
                       <div className="flex items-center gap-1.5">
                         {wo.status === 'pending' && (
                           <button
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAcceptWorkOrder(wo.id);
+                            }}
                             className="px-2.5 py-1 rounded text-[11px] bg-water-cyan/20 text-water-cyan border border-water-cyan/30 hover:bg-water-cyan/30 transition-colors flex items-center gap-1"
                           >
                             <Play size={10} />
@@ -504,25 +586,34 @@ export default function Inspection() {
                         )}
                         {(wo.status === 'assigned' || wo.status === 'processing') && (
                           <button
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStartProcessing(wo.id);
+                            }}
                             className="px-2.5 py-1 rounded text-[11px] bg-water-teal/20 text-water-teal border border-water-teal/30 hover:bg-water-teal/30 transition-colors flex items-center gap-1"
                           >
                             <Wrench size={10} />
                             处理
                           </button>
                         )}
-                        {wo.status !== 'closed' && wo.status !== 'upgraded' && (
+                        {wo.status !== 'closed' && wo.status !== 'completed' && wo.status !== 'upgraded' && (
                           <button
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleUpgradeWorkOrder(wo.id);
+                            }}
                             className="px-2.5 py-1 rounded text-[11px] bg-water-purple/20 text-water-purple border border-water-purple/30 hover:bg-water-purple/30 transition-colors flex items-center gap-1"
                           >
                             <ArrowUpCircle size={10} />
                             升级
                           </button>
                         )}
-                        {wo.status !== 'closed' && (
+                        {wo.status !== 'closed' && wo.status !== 'completed' && (
                           <button
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCloseWorkOrder(wo.id);
+                            }}
                             className="px-2.5 py-1 rounded text-[11px] bg-water-green/20 text-water-green border border-water-green/30 hover:bg-water-green/30 transition-colors flex items-center gap-1"
                           >
                             <XCircle size={10} />
@@ -587,12 +678,12 @@ export default function Inspection() {
                       <span className="text-slate-200">{selectedWorkOrder.location}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <User size={14} className="text-water-cyan" />
+                      <UserIcon size={14} className="text-water-cyan" />
                       <span className="text-slate-400 w-16">上报人:</span>
                       <span className="text-slate-200">{selectedWorkOrder.reporterName}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <User size={14} className="text-water-cyan" />
+                      <UserIcon size={14} className="text-water-cyan" />
                       <span className="text-slate-400 w-16">指派给:</span>
                       <span className="text-slate-200">{selectedWorkOrder.assigneeName}</span>
                     </div>
@@ -630,7 +721,7 @@ export default function Inspection() {
                   <h3 className="text-base font-semibold text-white">现场照片</h3>
                 </div>
                 <div className="grid grid-cols-3 gap-3">
-                  {selectedWorkOrder.photos.map((photo, idx) => (
+                  {selectedWorkOrder.photos.length > 0 ? selectedWorkOrder.photos.map((photo, idx) => (
                     <div key={idx} className="aspect-video rounded-lg bg-water-dark/80 border border-water-cyan/15 flex items-center justify-center relative overflow-hidden group">
                       <div className="absolute inset-0 bg-gradient-to-br from-water-cyan/5 to-water-teal/5" />
                       <div className="relative flex flex-col items-center gap-1 text-slate-500 group-hover:text-water-cyan/60 transition-colors">
@@ -638,7 +729,9 @@ export default function Inspection() {
                         <span className="text-xs">{photo}</span>
                       </div>
                     </div>
-                  ))}
+                  )) : (
+                    <div className="col-span-3 text-center text-slate-500 text-sm py-4">暂无现场照片</div>
+                  )}
                 </div>
               </div>
 
@@ -665,7 +758,7 @@ export default function Inspection() {
                     <div className="flex gap-3">
                       <div className="flex flex-col items-center">
                         <div className="w-7 h-7 rounded-full bg-water-teal/20 border border-water-teal/40 flex items-center justify-center">
-                          <User size={12} className="text-water-teal" />
+                          <UserIcon size={12} className="text-water-teal" />
                         </div>
                         <div className="w-px flex-1 bg-water-cyan/20 mt-1" />
                       </div>
@@ -736,7 +829,7 @@ export default function Inspection() {
                     )}
                   </div>
                 </div>
-                {selectedWorkOrder.status !== 'closed' && (
+                {selectedWorkOrder.status !== 'closed' && selectedWorkOrder.status !== 'completed' && (
                   <button className="mt-4 w-full btn-primary text-sm flex items-center justify-center gap-1.5">
                     <UploadCloud size={14} />
                     上传修复记录
@@ -751,25 +844,37 @@ export default function Inspection() {
                 </div>
                 <div className="space-y-2.5">
                   {selectedWorkOrder.status === 'pending' && (
-                    <button className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-cyan/20 text-water-cyan border border-water-cyan/30 hover:bg-water-cyan/30 transition-colors text-sm font-medium">
+                    <button
+                      onClick={() => handleAcceptWorkOrder(selectedWorkOrder.id)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-cyan/20 text-water-cyan border border-water-cyan/30 hover:bg-water-cyan/30 transition-colors text-sm font-medium"
+                    >
                       <Play size={14} />
                       接 单
                     </button>
                   )}
                   {(selectedWorkOrder.status === 'assigned' || selectedWorkOrder.status === 'processing') && (
-                    <button className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-teal/20 text-water-teal border border-water-teal/30 hover:bg-water-teal/30 transition-colors text-sm font-medium">
+                    <button
+                      onClick={() => handleStartProcessing(selectedWorkOrder.id)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-teal/20 text-water-teal border border-water-teal/30 hover:bg-water-teal/30 transition-colors text-sm font-medium"
+                    >
                       <Wrench size={14} />
                       开始处理
                     </button>
                   )}
-                  {selectedWorkOrder.status !== 'closed' && selectedWorkOrder.status !== 'upgraded' && (
-                    <button className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-purple/20 text-water-purple border border-water-purple/30 hover:bg-water-purple/30 transition-colors text-sm font-medium">
+                  {selectedWorkOrder.status !== 'closed' && selectedWorkOrder.status !== 'completed' && selectedWorkOrder.status !== 'upgraded' && (
+                    <button
+                      onClick={() => handleUpgradeWorkOrder(selectedWorkOrder.id)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-purple/20 text-water-purple border border-water-purple/30 hover:bg-water-purple/30 transition-colors text-sm font-medium"
+                    >
                       <ArrowUpCircle size={14} />
                       申请升级
                     </button>
                   )}
-                  {selectedWorkOrder.status !== 'closed' && (
-                    <button className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-green/20 text-water-green border border-water-green/30 hover:bg-water-green/30 transition-colors text-sm font-medium">
+                  {selectedWorkOrder.status !== 'closed' && selectedWorkOrder.status !== 'completed' && (
+                    <button
+                      onClick={() => handleCloseWorkOrder(selectedWorkOrder.id)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-water-green/20 text-water-green border border-water-green/30 hover:bg-water-green/30 transition-colors text-sm font-medium"
+                    >
                       <CheckCircle2 size={14} />
                       关 闭 工 单
                     </button>

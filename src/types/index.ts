@@ -14,7 +14,20 @@ export interface WaterSource {
   name: string;
   location: string;
   plantId: string;
-  status: 'normal' | 'warning' | 'alarm';
+  area?: string;
+  status: 'normal' | 'warning' | 'alarm' | 'offline';
+  capacity?: number;
+  type?: 'reservoir' | 'river' | 'groundwater';
+  dailyProduction?: number;
+  lastUpdate?: string;
+  currentQuality?: {
+    turbidity: number;
+    ph: number;
+    residualChlorine: number;
+    cod: number;
+    ammoniaNitrogen: number;
+    timestamp: string | number;
+  };
 }
 
 export interface WaterQualityData {
@@ -29,16 +42,31 @@ export interface WaterQualityData {
 
 export interface Alarm {
   id: string;
-  sourceId: string;
+  sourceId?: string;
+  plantId?: string;
+  pointId?: string;
   level: 1 | 2 | 3;
   type: string;
   parameter: string;
   value: number;
   threshold: number;
   timestamp: number;
-  status: 'pending' | 'processing' | 'resolved';
-  suggestion: string;
+  createdAt?: number;
+  status: 'pending' | 'processing' | 'resolved' | 'acknowledged';
+  suggestion?: string;
   pushedTo: string[];
+  acknowledgedBy?: string;
+  acknowledgedAt?: number;
+  resolvedBy?: string;
+  resolvedAt?: number;
+  resolvedNote?: string;
+  title?: string;
+  location?: string;
+  unit?: string;
+  description?: string;
+  category?: string;
+  min?: number;
+  max?: number;
 }
 
 export interface Pump {

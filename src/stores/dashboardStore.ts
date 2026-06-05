@@ -1,14 +1,13 @@
 import { create } from 'zustand';
+import { dashboardApi } from '@/lib/api';
 
 export interface Stats {
-  todayProduction: number;
-  yesterdayProduction: number;
-  currentPressure: number;
+  totalProduction: number;
+  avgPressure: number;
   waterQualityRate: number;
-  inspectionCompleteRate: number;
+  inspectionRate: number;
   activeAlarms: number;
-  totalUsers: number;
-  todayEnergy: number;
+  totalEnergy: number;
 }
 
 export interface TrendPoint {
@@ -23,138 +22,174 @@ export interface PressurePoint {
   lat: number;
   lng: number;
   pressure: number;
-  status: 'normal' | 'warning' | 'critical';
+  status: 'normal' | 'warning' | 'alarm';
   lastUpdate: string;
+  area?: string;
+  plantId?: string;
 }
 
 export interface DashboardAlarm {
   id: string;
-  level: 'warning' | 'critical' | 'info';
+  level: 'info' | 'warning' | 'critical';
   message: string;
   location: string;
   time: string;
+  parameter?: string;
+  value?: number;
+  threshold?: number;
+  status?: string;
 }
 
 interface DashboardState {
   stats: Stats;
   productionTrend: TrendPoint[];
+  monthlyEnergy: { month: string; energy: number; cost: number }[];
   pressurePoints: PressurePoint[];
   alarms: DashboardAlarm[];
   loading: boolean;
+  filters: {
+    area: string;
+    timeRange: string;
+    indicator: string;
+  };
+  setFilters: (filters: Partial<DashboardState['filters']>) => void;
   fetchStats: () => Promise<void>;
-  fetchTrend: () => Promise<void>;
-  updatePressure: () => Promise<void>;
+  fetchTrend: (hours?: number) => Promise<void>;
+  fetchMonthlyEnergy: (months?: number) => Promise<void>;
+  fetchPressure: () => Promise<void>;
+  fetchAlarms: () => Promise<void>;
+  acknowledgeAlarm: (id: string) => Promise<void>;
+  resolveAlarm: (id: string) => Promise<void>;
+  exportReport: (type: 'operation' | 'energy', month?: string) => Promise<void>;
   startRealTimeUpdates: () => () => void;
+  fetchAll: () => Promise<void>;
 }
 
-const generateInitialStats = (): Stats => ({
-  todayProduction: 128560,
-  yesterdayProduction: 125430,
-  currentPressure: 0.32,
-  waterQualityRate: 99.2,
-  inspectionCompleteRate: 94.5,
-  activeAlarms: 7,
-  totalUsers: 28456,
-  todayEnergy: 8562,
-});
-
-const generateTrend = (): TrendPoint[] => {
-  const points: TrendPoint[] = [];
-  for (let i = 23; i >= 0; i--) {
-    const hour = new Date();
-    hour.setHours(hour.getHours() - i);
-    const baseProduction = 5000 + Math.sin(i / 4) * 1000;
-    const baseConsumption = 4800 + Math.sin(i / 4 + 0.5) * 900;
-    points.push({
-      time: `${hour.getHours().toString().padStart(2, '0')}:00`,
-      production: Math.round(baseProduction + Math.random() * 500),
-      consumption: Math.round(baseConsumption + Math.random() * 500),
-    });
-  }
-  return points;
+const emptyStats: Stats = {
+  totalProduction: 0,
+  avgPressure: 0,
+  waterQualityRate: 0,
+  inspectionRate: 0,
+  activeAlarms: 0,
+  totalEnergy: 0,
 };
 
-const mockPressurePoints: PressurePoint[] = [
-  { id: 'p1', name: '东城区加压站', lat: 39.92, lng: 116.42, pressure: 0.34, status: 'normal', lastUpdate: '' },
-  { id: 'p2', name: '西城区监测点', lat: 39.91, lng: 116.36, pressure: 0.28, status: 'warning', lastUpdate: '' },
-  { id: 'p3', name: '朝阳区水厂出口', lat: 39.93, lng: 116.48, pressure: 0.45, status: 'normal', lastUpdate: '' },
-  { id: 'p4', name: '海淀区管网末端', lat: 39.95, lng: 116.32, pressure: 0.22, status: 'critical', lastUpdate: '' },
-  { id: 'p5', name: '丰台区监测点', lat: 39.85, lng: 116.38, pressure: 0.31, status: 'normal', lastUpdate: '' },
-  { id: 'p6', name: '石景山区加压站', lat: 39.90, lng: 116.22, pressure: 0.38, status: 'normal', lastUpdate: '' },
-];
+const formatTime = (ts: number) => {
+  const d = new Date(ts);
+  const now = Date.now();
+  const diff = Math.floor((now - ts) / 60000);
+  if (diff < 1) return '刚刚';
+  if (diff < 60) return `${diff}分钟前`;
+  if (diff < 1440) return `${Math.floor(diff / 60)}小时前`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
 
-const generateAlarms = (): DashboardAlarm[] => [
-  { id: 'a1', level: 'critical', message: '海淀区管网末端压力低于阈值', location: '海淀区监测点P4', time: '10分钟前' },
-  { id: 'a2', level: 'warning', message: '西城区监测点压力波动异常', location: '西城区监测点P2', time: '25分钟前' },
-  { id: 'a3', level: 'warning', message: '水源地浊度轻微超标', location: '一号水源厂', time: '1小时前' },
-  { id: 'a4', level: 'info', message: '3号水泵完成例行保养', location: '朝阳区水厂', time: '2小时前' },
-];
+const mapAlarmLevel = (level: number): DashboardAlarm['level'] => {
+  if (level >= 3) return 'critical';
+  if (level === 2) return 'warning';
+  return 'info';
+};
 
-const getNowStr = () => new Date().toLocaleTimeString('zh-CN', { hour12: false });
-
-export const useDashboardStore = create<DashboardState>((set) => ({
-  stats: generateInitialStats(),
-  productionTrend: generateTrend(),
-  pressurePoints: mockPressurePoints.map((p) => ({ ...p, lastUpdate: getNowStr() })),
-  alarms: generateAlarms(),
+export const useDashboardStore = create<DashboardState>((set, get) => ({
+  stats: emptyStats,
+  productionTrend: [],
+  monthlyEnergy: [],
+  pressurePoints: [],
+  alarms: [],
   loading: false,
+  filters: { area: 'all', timeRange: 'today', indicator: 'all' },
+
+  setFilters: (filters) => {
+    set((s) => ({ filters: { ...s.filters, ...filters } }));
+    get().fetchAll();
+  },
 
   fetchStats: async () => {
-    set({ loading: true });
-    await new Promise((r) => setTimeout(r, 300));
-    set((state) => ({
-      loading: false,
-      stats: {
-        ...state.stats,
-        todayProduction: state.stats.todayProduction + Math.round(Math.random() * 100),
-        currentPressure: +(0.28 + Math.random() * 0.1).toFixed(2),
-        activeAlarms: Math.max(0, state.stats.activeAlarms + Math.round(Math.random() * 2 - 1)),
-        todayEnergy: state.stats.todayEnergy + Math.round(Math.random() * 20),
-      },
-    }));
+    const res = await dashboardApi.getStats();
+    if (res.success && res.data) {
+      set({ stats: res.data as Stats });
+    }
   },
 
-  fetchTrend: async () => {
-    set({ loading: true });
-    await new Promise((r) => setTimeout(r, 300));
-    set({ productionTrend: generateTrend(), loading: false });
+  fetchTrend: async (hours = 24) => {
+    const res = await dashboardApi.getProductionTrend(hours);
+    if (res.success && res.data) {
+      set({ productionTrend: res.data as TrendPoint[] });
+    }
   },
 
-  updatePressure: async () => {
-    await new Promise((r) => setTimeout(r, 200));
-    set((state) => ({
-      pressurePoints: state.pressurePoints.map((p) => {
-        const delta = (Math.random() - 0.5) * 0.06;
-        const newPressure = +Math.max(0.1, Math.min(0.6, p.pressure + delta)).toFixed(2);
-        let status: PressurePoint['status'] = 'normal';
-        if (newPressure < 0.2 || newPressure > 0.5) status = 'critical';
-        else if (newPressure < 0.25 || newPressure > 0.45) status = 'warning';
-        return { ...p, pressure: newPressure, status, lastUpdate: getNowStr() };
-      }),
-    }));
+  fetchMonthlyEnergy: async (months = 12) => {
+    const res = await dashboardApi.getMonthlyEnergy(months);
+    if (res.success && res.data) {
+      set({ monthlyEnergy: res.data as { month: string; energy: number; cost: number }[] });
+    }
+  },
+
+  fetchPressure: async () => {
+    const res = await dashboardApi.getPressurePoints();
+    if (res.success && res.data) {
+      const points = (res.data as any[]).map((p) => ({
+        ...p,
+        lat: p.lat,
+        lng: p.lng,
+        lastUpdate: formatTime(p.timestamp || Date.now()),
+        status: p.status === 'normal' ? 'normal' : p.status === 'warning' ? 'warning' : 'alarm',
+      }));
+      set({ pressurePoints: points });
+    }
+  },
+
+  fetchAlarms: async () => {
+    const res = await dashboardApi.getAlarms();
+    if (res.success && res.data) {
+      const alarms = (res.data as any[]).map((a) => ({
+        id: a.id,
+        level: mapAlarmLevel(a.level),
+        message: `${a.parameter || a.type} ${a.value} 超标(阈值${a.threshold})`,
+        location: a.sourceId || a.plantId || a.pointId || '系统',
+        time: formatTime(a.timestamp),
+        parameter: a.parameter,
+        value: a.value,
+        threshold: a.threshold,
+        status: a.status,
+      }));
+      set({ alarms });
+    }
+  },
+
+  acknowledgeAlarm: async (id) => {
+    await dashboardApi.acknowledgeAlarm(id);
+    await get().fetchAlarms();
+  },
+
+  resolveAlarm: async (id) => {
+    await dashboardApi.resolveAlarm(id);
+    await get().fetchAlarms();
+  },
+
+  exportReport: async (type, month) => {
+    await dashboardApi.exportReport(type, month);
   },
 
   startRealTimeUpdates: () => {
+    get().fetchAll();
     const interval = setInterval(() => {
-      set((state) => {
-        const newStats = { ...state.stats };
-        newStats.todayProduction += Math.round(Math.random() * 50);
-        newStats.currentPressure = +(0.28 + Math.random() * 0.1).toFixed(2);
-        newStats.todayEnergy += Math.round(Math.random() * 10);
-
-        const newPoints = state.pressurePoints.map((p) => {
-          const delta = (Math.random() - 0.5) * 0.04;
-          const newPressure = +Math.max(0.1, Math.min(0.6, p.pressure + delta)).toFixed(2);
-          let status: PressurePoint['status'] = 'normal';
-          if (newPressure < 0.2 || newPressure > 0.5) status = 'critical';
-          else if (newPressure < 0.25 || newPressure > 0.45) status = 'warning';
-          return { ...p, pressure: newPressure, status, lastUpdate: getNowStr() };
-        });
-
-        return { stats: newStats, pressurePoints: newPoints };
-      });
-    }, 3000);
-
+      get().fetchStats();
+      get().fetchPressure();
+      get().fetchAlarms();
+    }, 15000);
     return () => clearInterval(interval);
+  },
+
+  fetchAll: async () => {
+    set({ loading: true });
+    await Promise.all([
+      get().fetchStats(),
+      get().fetchTrend(),
+      get().fetchMonthlyEnergy(),
+      get().fetchPressure(),
+      get().fetchAlarms(),
+    ]);
+    set({ loading: false });
   },
 }));

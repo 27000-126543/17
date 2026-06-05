@@ -97,18 +97,18 @@ const initialSewageStages: SewageStage[] = initialWaterSources.slice(0, 2).flatM
 );
 
 const initialSewageDevices: SewageDevice[] = [
-  { id: 'sd-00', name: '1#进水泵', stageId: 'stage-00', status: 'running' },
-  { id: 'sd-01', name: '1#粗格栅', stageId: 'stage-01', status: 'running' },
-  { id: 'sd-02', name: '1#细格栅', stageId: 'stage-02', status: 'running' },
-  { id: 'sd-03', name: '1#沉砂器', stageId: 'stage-03', status: 'running' },
-  { id: 'sd-04', name: '1#曝气风机', stageId: 'stage-04', status: 'running' },
-  { id: 'sd-05', name: '2#曝气风机', stageId: 'stage-04', status: 'running' },
-  { id: 'sd-00', name: '1#刮泥机', stageId: 'stage-05', status: 'running' },
-  { id: 'sd-01', name: '2#刮泥机', stageId: 'stage-05', status: 'locked', lockedBy: 'system', lockedAt: now - 2 * 3600 * 1000, lockReason: 'COD超标' },
-  { id: 'sd-07', name: '1#紫外消毒', stageId: 'stage-06', status: 'running' },
-  { id: 'sd-10', name: '西厂1#进水泵', stageId: 'stage-10', status: 'running' },
-  { id: 'sd-14', name: '西厂1#曝气风机', stageId: 'stage-14', status: 'running' },
-].map((d, i) => ({ ...d, id: `sd-${String(i).padStart(3, '0')}` }));
+  { id: 'sd-000', name: '1#进水泵', stageId: 'stage-00', status: 'running' },
+  { id: 'sd-001', name: '1#粗格栅', stageId: 'stage-01', status: 'running' },
+  { id: 'sd-002', name: '1#细格栅', stageId: 'stage-02', status: 'running' },
+  { id: 'sd-003', name: '1#沉砂器', stageId: 'stage-03', status: 'running' },
+  { id: 'sd-004', name: '1#曝气风机', stageId: 'stage-04', status: 'running' },
+  { id: 'sd-005', name: '2#曝气风机', stageId: 'stage-04', status: 'running' },
+  { id: 'sd-006', name: '1#刮泥机', stageId: 'stage-05', status: 'running' },
+  { id: 'sd-007', name: '2#刮泥机', stageId: 'stage-05', status: 'locked', lockedBy: 'system', lockedAt: now - 2 * 3600 * 1000, lockReason: 'COD超标' },
+  { id: 'sd-008', name: '1#紫外消毒', stageId: 'stage-06', status: 'running' },
+  { id: 'sd-009', name: '西厂1#进水泵', stageId: 'stage-10', status: 'running' },
+  { id: 'sd-010', name: '西厂1#曝气风机', stageId: 'stage-14', status: 'running' },
+];
 
 const initialDrainagePoints: DrainagePoint[] = areas.slice(0, 4).flatMap((a, i) =>
   [0, 1].map(j => {

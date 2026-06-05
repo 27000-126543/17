@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   ArrowRight,
   Lock,
@@ -10,10 +10,7 @@ import {
   Beaker,
   Waves,
   Shield,
-  ChevronDown,
-  ChevronUp,
   Clock,
-  MapPin,
   User,
   Zap,
   UploadCloud,
@@ -21,7 +18,7 @@ import {
 import { cn } from '@/lib/utils';
 import StatusBadge from '@/components/common/StatusBadge';
 import DataTable, { type DataTableColumn } from '@/components/common/DataTable';
-import { sewageStages, sewageData, users } from '@/mock/data';
+import { useSewageStore, type SewageWorkOrder } from '@/stores/sewageStore';
 
 type SewageTab = 'overview' | 'abnormal';
 
@@ -38,7 +35,7 @@ interface ProcessStage {
   isAlarm: boolean;
 }
 
-interface AbnormalWorkOrder {
+interface AbnormalWorkOrder extends Record<string, unknown> {
   id: string;
   time: string;
   stageName: string;
@@ -89,134 +86,69 @@ export default function Sewage() {
   const [activeTab, setActiveTab] = useState<SewageTab>('overview');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { stages, devices, workOrders, fetchAll, unlockDevice } = useSewageStore();
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
   const processStages = useMemo<ProcessStage[]>(() => {
-    const displayStages = [
-      '进水', '粗格栅', '细格栅', '沉砂池', '生化池', '沉淀池', '消毒', '出水',
-    ];
-    return displayStages.map((name, index) => {
-      const latestData = sewageData
-        .filter((d) => {
-          const stage = sewageStages.find((s) => s.id === d.stageId);
-          return stage && stage.plantId === 'p001';
-        })
-        .sort((a, b) => b.timestamp - a.timestamp);
-
-      let matchedData;
-      if (name === '粗格栅' || name === '细格栅') {
-        matchedData = latestData.find((d) => {
-          const s = sewageStages.find((st) => st.id === d.stageId);
-          return s?.name === '格栅';
-        });
-      } else if (name === '沉淀池') {
-        matchedData = latestData.find((d) => {
-          const s = sewageStages.find((st) => st.id === d.stageId);
-          return s?.name === '二沉池';
-        });
-      } else if (name === '消毒' || name === '出水') {
-        matchedData = latestData.find((d) => {
-          const s = sewageStages.find((st) => st.id === d.stageId);
-          return s?.name === '消毒出水';
-        });
-      } else {
-        matchedData = latestData.find((d) => {
-          const s = sewageStages.find((st) => st.id === d.stageId);
-          return s?.name === name;
-        });
-      }
-
-      const cod = matchedData?.cod ?? 0;
-      const ammonia = matchedData?.ammoniaNitrogen ?? 0;
-      const isAlarm =
-        (name !== '进水' && (cod > COD_THRESHOLD || ammonia > AMMONIA_THRESHOLD)) ||
-        (name === '出水' && (cod > COD_THRESHOLD || ammonia > AMMONIA_THRESHOLD));
-
-      return {
-        id: `stage-${index}`,
-        name,
-        order: index,
-        icon: stageIcons[name] || <Factory size={20} />,
-        cod,
-        ammoniaNitrogen: ammonia,
-        codRemoval: matchedData?.codRemoval ?? 0,
-        ammoniaRemoval: matchedData?.ammoniaRemoval ?? 0,
-        flow: matchedData?.flow ?? 0,
-        isAlarm,
-      };
-    });
-  }, []);
+    return stages
+      .filter((s) => s.plantId === 'p001')
+      .sort((a, b) => a.order - b.order)
+      .map((stage) => ({
+        id: stage.id,
+        name: stage.name,
+        order: stage.order,
+        icon: stageIcons[stage.name] || <Factory size={20} />,
+        cod: stage.cod,
+        ammoniaNitrogen: stage.ammoniaNitrogen,
+        codRemoval: stage.codRemoval,
+        ammoniaRemoval: stage.ammoniaRemoval,
+        flow: stage.flow,
+        isAlarm: stage.isAlarm,
+      }));
+  }, [stages]);
 
   const abnormalOrders = useMemo<AbnormalWorkOrder[]>(() => {
-    const now = Date.now();
-    return [
-      {
-        id: 'wo-sew-001',
-        time: formatDateTime(now - 3600000 * 2),
-        stageName: '生化池',
-        parameter: 'COD',
-        value: 68.5,
-        threshold: 50,
-        deviceLocked: true,
-        status: 'processing',
-        overdueHours: getOverdueHours(now - 3600000 * 2),
-        escalated: false,
-        handler: '张建国',
-      },
-      {
-        id: 'wo-sew-002',
-        time: formatDateTime(now - 3600000 * 28),
-        stageName: '沉淀池',
-        parameter: '氨氮',
-        value: 7.2,
-        threshold: 5,
-        deviceLocked: true,
-        status: 'upgraded',
-        overdueHours: getOverdueHours(now - 3600000 * 28),
-        escalated: true,
-        escalationNote: '超时24小时，已自动升级至集团技术中心处理',
-        handler: '集团技术中心-李工',
-      },
-      {
-        id: 'wo-sew-003',
-        time: formatDateTime(now - 3600000 * 5),
-        stageName: '细格栅',
-        parameter: 'COD',
-        value: 368,
-        threshold: 360,
-        deviceLocked: false,
-        status: 'pending',
-        overdueHours: getOverdueHours(now - 3600000 * 5),
-        escalated: false,
-        handler: '赵国栋',
-      },
-      {
-        id: 'wo-sew-004',
-        time: formatDateTime(now - 3600000 * 36),
-        stageName: '出水',
-        parameter: 'COD',
-        value: 58.3,
-        threshold: 50,
-        deviceLocked: true,
-        status: 'upgraded',
-        overdueHours: getOverdueHours(now - 3600000 * 36),
-        escalated: true,
-        escalationNote: '超时24小时，已自动升级至集团技术中心，总工已介入',
-        handler: '集团技术中心-王总工',
-      },
-      {
-        id: 'wo-sew-005',
-        time: formatDateTime(now - 3600000 * 12),
-        stageName: '沉砂池',
-        parameter: '流量',
-        value: 820,
-        threshold: 800,
-        deviceLocked: false,
-        status: 'resolved',
-        overdueHours: getOverdueHours(now - 3600000 * 12),
-        escalated: false,
-        handler: '孙丽华',
-      },
-    ];
-  }, []);
+    return workOrders
+      .filter((wo): wo is SewageWorkOrder => wo.type === 'sewage')
+      .map((wo) => {
+        const stage = stages.find((s) => s.id === wo.stageId);
+        const device = devices.find((d) => d.id === wo.deviceId);
+        const overdueHours = getOverdueHours(wo.createdAt);
+        const escalated = wo.status === 'upgraded';
+        const deviceLocked = wo.deviceLocked || device?.status === 'locked' || false;
+        let mappedStatus: AbnormalWorkOrder['status'];
+        if (wo.status === 'completed' || wo.status === 'closed') {
+          mappedStatus = 'resolved';
+        } else if (wo.status === 'pending' || wo.status === 'processing' || wo.status === 'upgraded') {
+          mappedStatus = wo.status;
+        } else {
+          mappedStatus = 'pending';
+        }
+        let parameter = wo.parameter;
+        if (!parameter) {
+          const match = wo.description?.match(/COD|氨氮|流量/);
+          parameter = match?.[0] ?? '指标';
+        }
+        return {
+          id: wo.id,
+          time: formatDateTime(wo.createdAt),
+          stageName: stage?.name ?? '未知',
+          parameter,
+          value: wo.value,
+          threshold: wo.threshold,
+          deviceLocked,
+          status: mappedStatus,
+          overdueHours,
+          escalated,
+          escalationNote: wo.upgradeReason,
+          handler: wo.assigneeId ?? wo.reporterId ?? '未指派',
+        };
+      });
+  }, [workOrders, stages, devices]);
 
   const lockedDevicesCount = abnormalOrders.filter((o) => o.deviceLocked).length;
 
@@ -605,17 +537,16 @@ export default function Sewage() {
           </div>
 
           <div className="flex-1">
-            <DataTable
-              columns={abnormalColumns as any}
-              data={abnormalOrders as any}
+            <DataTable<AbnormalWorkOrder>
+              columns={abnormalColumns}
+              data={abnormalOrders}
               rowKey="id"
               onRowClick={(row) => {
-                const r = row as unknown as AbnormalWorkOrder;
-                setExpandedOrderId(expandedOrderId === r.id ? null : r.id);
+                setExpandedOrderId(expandedOrderId === row.id ? null : row.id);
               }}
               rowClassName={(row) =>
                 cn(
-                  (row as unknown as AbnormalWorkOrder).escalated && 'bg-water-red/5',
+                  row.escalated && 'bg-water-red/5',
                 )
               }
             />

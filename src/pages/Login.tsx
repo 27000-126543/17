@@ -11,7 +11,8 @@ import {
   Wrench,
   Loader2,
 } from 'lucide-react';
-import { useAuthStore, UserRole } from '@/stores/authStore';
+import { useAuthStore } from '@/stores/authStore';
+import type { UserRole } from '@/types';
 import { cn } from '@/lib/utils';
 
 interface RoleOption {

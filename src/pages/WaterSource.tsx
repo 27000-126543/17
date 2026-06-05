@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import {
@@ -19,7 +19,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useWaterStore } from '@/stores/waterStore';
-import { useAlarmStore, type Alarm } from '@/stores/alarmStore';
+import { useAlarmStore } from '@/stores/alarmStore';
+import type { Alarm } from '@/types';
 import StatusBadge from '@/components/common/StatusBadge';
 import GaugeChart from '@/components/common/GaugeChart';
 import DataTable from '@/components/common/DataTable';
@@ -27,6 +28,16 @@ import DataTable from '@/components/common/DataTable';
 type SourceTab = 'overview' | 'quality' | 'alarm';
 type LevelFilter = 'all' | 1 | 2 | 3;
 type StatusFilter = 'all' | 'pending' | 'processing' | 'resolved';
+
+interface AlarmDisplay extends Omit<Alarm, 'threshold' | 'createdAt' | 'acknowledgedAt' | 'resolvedAt'> {
+  title: string;
+  location: string;
+  createdAt: string;
+  unit: string;
+  threshold: { min?: number; max?: number };
+  acknowledgedAt?: string;
+  resolvedAt?: string;
+}
 
 const statusBarMap: Record<string, string> = {
   normal: 'bg-water-green',
@@ -57,84 +68,102 @@ const paramThresholds: Record<string, { min: number; max: number; unit: string; 
   temperature: { min: 5, max: 30, unit: '℃', label: '温度' },
 };
 
-function gen24hTrend(): { time: string; values: Record<string, number> }[] {
-  const arr: { time: string; values: Record<string, number> }[] = [];
-  const now = new Date();
-  for (let i = 23; i >= 0; i--) {
-    const d = new Date(now.getTime() - i * 3600000);
-    arr.push({
-      time: `${d.getHours().toString().padStart(2, '0')}:00`,
-      values: {
-        turbidity: +(0.3 + Math.random() * 0.6).toFixed(2),
-        ph: +(7 + (Math.random() - 0.5) * 0.6).toFixed(2),
-        residualChlorine: +(0.3 + Math.random() * 0.4).toFixed(2),
-        cod: +(2 + Math.random() * 3).toFixed(1),
-        ammoniaNitrogen: +(0.05 + Math.random() * 0.12).toFixed(3),
-        temperature: +(18 + Math.random() * 6).toFixed(1),
-      },
-    });
-  }
-  return arr;
-}
-
 export default function WaterSource() {
   const [activeTab, setActiveTab] = useState<SourceTab>('overview');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [trendParam, setTrendParam] = useState<keyof typeof paramThresholds>('turbidity');
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [suggestionModal, setSuggestionModal] = useState<{ open: boolean; alarm: Alarm | null }>({
+  const [suggestionModal, setSuggestionModal] = useState<{ open: boolean; alarm: AlarmDisplay | null }>({
     open: false,
     alarm: null,
   });
-  const [detailModal, setDetailModal] = useState<{ open: boolean; alarm: Alarm | null }>({
+  const [detailModal, setDetailModal] = useState<{ open: boolean; alarm: AlarmDisplay | null }>({
     open: false,
     alarm: null,
   });
 
-  const { waterSources } = useWaterStore();
-  const { alarms, acknowledgeAlarm, resolveAlarm } = useAlarmStore();
+  const { waterSources, qualityHistory, fetchAll, selectSource, selectedSourceId: storeSelectedSourceId } = useWaterStore();
+  const { alarms, fetchAlarms, acknowledgeAlarm, resolveAlarm } = useAlarmStore();
+
+  const formatAlarmTime = (ts?: number) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  };
+
+  useEffect(() => {
+    fetchAll();
+    fetchAlarms();
+  }, [fetchAll, fetchAlarms]);
 
   const allSources = useMemo(() => {
-    const mock5th = {
-      id: 'ws-005',
-      name: '南部取水枢纽',
-      type: 'river' as const,
-      location: '市南区江滨大道1288号',
-      status: 'warning' as const,
-      currentQuality: {
-        turbidity: 0.95,
-        ph: 7.42,
-        residualChlorine: 0.45,
-        cod: 5.2,
-        ammoniaNitrogen: 0.15,
-        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-      },
-      dailyProduction: 38000,
-      capacity: 0,
-      lastUpdate: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-    };
-    return [...waterSources, mock5th];
+    return waterSources.map((s) => ({
+      ...s,
+      type: (s as any).type || 'reservoir',
+      dailyProduction: (s as any).dailyProduction ?? Math.round(20000 + Math.random() * 30000),
+      lastUpdate: (s as any).lastUpdate || (s.currentQuality?.timestamp ? formatAlarmTime(s.currentQuality.timestamp as number) : ''),
+      currentQuality: s.currentQuality
+        ? {
+            ...s.currentQuality,
+            timestamp: typeof s.currentQuality.timestamp === 'number'
+              ? formatAlarmTime(s.currentQuality.timestamp)
+              : s.currentQuality.timestamp,
+          }
+        : undefined,
+    }));
   }, [waterSources]);
 
   const selectedSource = useMemo(
-    () => allSources.find((s) => s.id === selectedSourceId) ?? allSources[0],
-    [allSources, selectedSourceId],
+    () => allSources.find((s) => s.id === (selectedSourceId ?? storeSelectedSourceId)) ?? allSources[0],
+    [allSources, selectedSourceId, storeSelectedSourceId],
   );
 
-  const trendData = useMemo(() => gen24hTrend(), []);
+  const trendData = useMemo(() => {
+    return qualityHistory.map((h) => ({
+      time: h.time,
+      values: {
+        turbidity: h.turbidity,
+        ph: h.ph,
+        residualChlorine: h.residualChlorine,
+        cod: h.cod,
+        ammoniaNitrogen: h.ammoniaNitrogen,
+        temperature: 22.5,
+      },
+    }));
+  }, [qualityHistory]);
+
+  const mappedAlarms = useMemo((): AlarmDisplay[] => {
+    return alarms.map((a) => {
+      const source = waterSources.find((s) => s.id === a.sourceId);
+      return {
+        ...(a as unknown as AlarmDisplay),
+        title: (a as unknown as Record<string, unknown>).title as string || `${source?.name || '水源地'} ${a.parameter}异常`,
+        location: (a as unknown as Record<string, unknown>).location as string || source?.location || '',
+        createdAt: formatAlarmTime(a.timestamp),
+        unit: (a as unknown as Record<string, unknown>).unit as string || paramThresholds[a.parameter as keyof typeof paramThresholds]?.unit || '',
+        threshold: (a as unknown as Record<string, unknown>).threshold && typeof (a as unknown as Record<string, unknown>).threshold === 'object'
+          ? (a as unknown as Record<string, unknown>).threshold as { min?: number; max?: number }
+          : { max: a.threshold as unknown as number },
+        acknowledgedAt: (a as unknown as Record<string, unknown>).acknowledgedAt ? formatAlarmTime((a as unknown as Record<string, unknown>).acknowledgedAt as number) : undefined,
+        resolvedAt: a.resolvedAt ? formatAlarmTime(a.resolvedAt) : undefined,
+      };
+    });
+  }, [alarms, waterSources]);
 
   const filteredAlarms = useMemo(() => {
-    return alarms
+    return mappedAlarms
       .filter((a) => {
-        const levelMap: Record<string, 1 | 2 | 3> = { info: 1, warning: 2, critical: 3 };
-        const lv = levelMap[a.level];
+        const lv = typeof a.level === 'number' ? a.level : 1;
         if (levelFilter !== 'all' && lv !== levelFilter) return false;
-        if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+        if (statusFilter !== 'all') {
+          if (statusFilter === 'processing' && a.status === 'acknowledged') return true;
+          if (a.status !== statusFilter) return false;
+        }
         return true;
       })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [alarms, levelFilter, statusFilter]);
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  }, [mappedAlarms, levelFilter, statusFilter]);
 
   const tabs: { key: SourceTab; label: string; icon: React.ReactNode }[] = [
     { key: 'overview', label: '水源总览', icon: <Droplets size={16} /> },
@@ -149,13 +178,13 @@ export default function WaterSource() {
     return 'normal';
   };
 
-  const levelBadge = (level: string) => {
-    if (level === 'critical') return { label: '3级', color: 'bg-water-red/15 text-water-red border-water-red/30' };
-    if (level === 'warning') return { label: '2级', color: 'bg-water-yellow/15 text-water-yellow border-water-yellow/30' };
+  const levelBadge = (level: string | number) => {
+    if (level === 'critical' || level === 3) return { label: '3级', color: 'bg-water-red/15 text-water-red border-water-red/30' };
+    if (level === 'warning' || level === 2) return { label: '2级', color: 'bg-water-yellow/15 text-water-yellow border-water-yellow/30' };
     return { label: '1级', color: 'bg-water-cyan/15 text-water-cyan border-water-cyan/30' };
   };
 
-  const statusBadgeAlarm = (status: Alarm['status']) => {
+  const statusBadgeAlarm = (status: AlarmDisplay['status']) => {
     if (status === 'pending') return { label: '待处理', color: 'bg-water-orange/15 text-water-orange border-water-orange/30' };
     if (status === 'acknowledged') return { label: '处理中', color: 'bg-water-cyan/15 text-water-cyan border-water-cyan/30' };
     return { label: '已解决', color: 'bg-water-green/15 text-water-green border-water-green/30' };
@@ -279,6 +308,7 @@ export default function WaterSource() {
                 className="relative glass-card corner-deco rounded-xl overflow-hidden group cursor-pointer hover:shadow-lg hover:shadow-water-cyan/10 transition-all duration-300"
                 onClick={() => {
                   setSelectedSourceId(source.id);
+                  selectSource(source.id);
                   setActiveTab('quality');
                 }}
               >
@@ -311,7 +341,7 @@ export default function WaterSource() {
                     <StatusBadge
                       status={statusToBadge(source.status) as 'normal' | 'warning' | 'alarm'}
                       text={statusLabelMap[source.status]}
-                      pulse={source.status !== 'normal' && source.status !== 'offline'}
+                      pulse={(source.status as string) !== 'normal' && (source.status as string) !== 'offline'}
                     />
                   </div>
 
@@ -362,7 +392,10 @@ export default function WaterSource() {
                   {allSources.map((s) => (
                     <button
                       key={s.id}
-                      onClick={() => setSelectedSourceId(s.id)}
+                      onClick={() => {
+                        setSelectedSourceId(s.id);
+                        selectSource(s.id);
+                      }}
                       className={cn(
                         'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all duration-200',
                         selectedSource.id === s.id
@@ -418,7 +451,7 @@ export default function WaterSource() {
                   <StatusBadge
                     status={statusToBadge(selectedSource.status) as 'normal' | 'warning' | 'alarm'}
                     text={statusLabelMap[selectedSource.status]}
-                    pulse={selectedSource.status !== 'normal' && selectedSource.status !== 'offline'}
+                    pulse={(selectedSource.status as string) !== 'normal' && (selectedSource.status as string) !== 'offline'}
                   />
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -576,7 +609,7 @@ export default function WaterSource() {
                   title: '参数',
                   width: 100,
                   render: (v, row) => {
-                    const a = row as unknown as Alarm;
+                    const a = row as unknown as AlarmDisplay;
                     return (
                       <span className="text-slate-300">
                         {a.title.replace(/(管网|水源|水泵|.*压力|.*流量|.*余氯|.*浊度|.*COD|.*振动|.*效率)/, '') || (v as string)}
@@ -590,7 +623,7 @@ export default function WaterSource() {
                   width: 100,
                   align: 'right',
                   render: (v, row) => {
-                    const a = row as unknown as Alarm;
+                    const a = row as unknown as AlarmDisplay;
                     if (v === undefined || v === null) return <span className="text-slate-500">-</span>;
                     return (
                       <span className="data-number text-water-yellow">
@@ -605,7 +638,7 @@ export default function WaterSource() {
                   width: 100,
                   align: 'right',
                   render: (_v, row) => {
-                    const a = row as unknown as Alarm;
+                    const a = row as unknown as AlarmDisplay;
                     if (!a.threshold) return <span className="text-slate-500">-</span>;
                     const parts = [];
                     if (a.threshold.min !== undefined) parts.push(`≥${a.threshold.min}`);
@@ -633,7 +666,7 @@ export default function WaterSource() {
                   width: 90,
                   align: 'center',
                   render: (v) => {
-                    const sb = statusBadgeAlarm(v as Alarm['status']);
+                    const sb = statusBadgeAlarm(v as AlarmDisplay['status']);
                     return (
                       <span className={cn('inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border', sb.color)}>
                         {sb.label}
@@ -647,7 +680,7 @@ export default function WaterSource() {
                   width: 220,
                   align: 'center',
                   render: (_v, row) => {
-                    const a = row as unknown as Alarm;
+                    const a = row as unknown as AlarmDisplay;
                     return (
                       <div className="flex items-center justify-center gap-1.5">
                         <button
@@ -772,7 +805,7 @@ export default function WaterSource() {
               {suggestionModal.alarm.status !== 'resolved' && (
                 <button
                   onClick={() => {
-                    resolveAlarm(suggestionModal.alarm!.id, '已按建议处置完成');
+                    resolveAlarm(suggestionModal.alarm!.id);
                     setSuggestionModal({ open: false, alarm: null });
                   }}
                   className="btn-primary"

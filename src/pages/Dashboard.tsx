@@ -22,6 +22,7 @@ import StatCard from '@/components/common/StatCard';
 import { useDashboardStore, DashboardAlarm } from '@/stores/dashboardStore';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
+import { useState } from 'react';
 
 function SectionTitle({
   icon,
@@ -152,7 +153,12 @@ export default function Dashboard() {
   const productionTrend = useDashboardStore((s) => s.productionTrend);
   const pressurePoints = useDashboardStore((s) => s.pressurePoints);
   const alarms = useDashboardStore((s) => s.alarms);
+  const filters = useDashboardStore((s) => s.filters);
+  const setFilters = useDashboardStore((s) => s.setFilters);
+  const exportReport = useDashboardStore((s) => s.exportReport);
   const startRealTimeUpdates = useDashboardStore((s) => s.startRealTimeUpdates);
+
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -539,17 +545,17 @@ export default function Dashboard() {
                 <div className="relative">
                   <div className="flex gap-12 whitespace-nowrap animate-scroll" style={{ animationDuration: '30s' }}>
                     {[
-                      { label: '实时产水', value: `${(stats.todayProduction / 1000).toFixed(1)}K m³`, color: 'text-water-cyan' },
-                      { label: '当前压力', value: `${stats.currentPressure} MPa`, color: 'text-water-teal' },
-                      { label: '在线监测点', value: '128 个', color: 'text-water-green' },
-                      { label: '活跃工单', value: '68 件', color: 'text-water-yellow' },
+                      { label: '实时产水', value: `${(stats.totalProduction / 1000).toFixed(1)}K m³`, color: 'text-water-cyan' },
+                      { label: '当前压力', value: `${stats.avgPressure.toFixed(2)} MPa`, color: 'text-water-teal' },
+                      { label: '在线监测点', value: `${pressurePoints.length} 个`, color: 'text-water-green' },
+                      { label: '巡检完成率', value: `${stats.inspectionRate.toFixed(1)}%`, color: 'text-water-yellow' },
                       { label: '今日报警', value: `${stats.activeAlarms} 条`, color: 'text-water-red' },
                       { label: '系统状态', value: '运行正常', color: 'text-water-green' },
                     ].concat([
-                      { label: '实时产水', value: `${(stats.todayProduction / 1000).toFixed(1)}K m³`, color: 'text-water-cyan' },
-                      { label: '当前压力', value: `${stats.currentPressure} MPa`, color: 'text-water-teal' },
-                      { label: '在线监测点', value: '128 个', color: 'text-water-green' },
-                      { label: '活跃工单', value: '68 件', color: 'text-water-yellow' },
+                      { label: '实时产水', value: `${(stats.totalProduction / 1000).toFixed(1)}K m³`, color: 'text-water-cyan' },
+                      { label: '当前压力', value: `${stats.avgPressure.toFixed(2)} MPa`, color: 'text-water-teal' },
+                      { label: '在线监测点', value: `${pressurePoints.length} 个`, color: 'text-water-green' },
+                      { label: '巡检完成率', value: `${stats.inspectionRate.toFixed(1)}%`, color: 'text-water-yellow' },
                       { label: '今日报警', value: `${stats.activeAlarms} 条`, color: 'text-water-red' },
                       { label: '系统状态', value: '运行正常', color: 'text-water-green' },
                     ]).map((item, idx) => (
@@ -565,35 +571,70 @@ export default function Dashboard() {
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-water-dark/60 border border-water-cyan/10">
                   <Filter size={14} className="text-water-cyan" />
-                  <select className="bg-transparent text-sm text-slate-300 outline-none cursor-pointer">
-                    <option className="bg-water-dark">全部片区</option>
-                    <option className="bg-water-dark">东城区</option>
-                    <option className="bg-water-dark">西城区</option>
-                    <option className="bg-water-dark">朝阳区</option>
-                    <option className="bg-water-dark">海淀区</option>
+                  <select
+                    value={filters.area}
+                    onChange={(e) => setFilters({ area: e.target.value })}
+                    className="bg-transparent text-sm text-slate-300 outline-none cursor-pointer"
+                  >
+                    <option className="bg-water-dark" value="all">全部片区</option>
+                    <option className="bg-water-dark" value="东城区">东城区</option>
+                    <option className="bg-water-dark" value="西城区">西城区</option>
+                    <option className="bg-water-dark" value="北城区">北城区</option>
+                    <option className="bg-water-dark" value="崇明区">崇明区</option>
                   </select>
                 </div>
                 <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-water-dark/60 border border-water-cyan/10">
                   <Calendar size={14} className="text-water-cyan" />
-                  <select className="bg-transparent text-sm text-slate-300 outline-none cursor-pointer">
-                    <option className="bg-water-dark">今日</option>
-                    <option className="bg-water-dark">本周</option>
-                    <option className="bg-water-dark">本月</option>
+                  <select
+                    value={filters.timeRange}
+                    onChange={(e) => setFilters({ timeRange: e.target.value })}
+                    className="bg-transparent text-sm text-slate-300 outline-none cursor-pointer"
+                  >
+                    <option className="bg-water-dark" value="today">今日</option>
+                    <option className="bg-water-dark" value="week">本周</option>
+                    <option className="bg-water-dark" value="month">本月</option>
                   </select>
                 </div>
                 <div className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-water-dark/60 border border-water-cyan/10">
                   <AreaChart size={14} className="text-water-cyan" />
-                  <select className="bg-transparent text-sm text-slate-300 outline-none cursor-pointer">
-                    <option className="bg-water-dark">全部指标</option>
-                    <option className="bg-water-dark">产水量</option>
-                    <option className="bg-water-dark">水质</option>
-                    <option className="bg-water-dark">能耗</option>
+                  <select
+                    value={filters.indicator}
+                    onChange={(e) => setFilters({ indicator: e.target.value })}
+                    className="bg-transparent text-sm text-slate-300 outline-none cursor-pointer"
+                  >
+                    <option className="bg-water-dark" value="all">全部指标</option>
+                    <option className="bg-water-dark" value="production">产水量</option>
+                    <option className="bg-water-dark" value="quality">水质</option>
+                    <option className="bg-water-dark" value="energy">能耗</option>
                   </select>
                 </div>
-                <button className="btn-primary flex items-center gap-1.5 text-sm py-2">
-                  <Download size={14} />
-                  导出报表
-                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowExportMenu(!showExportMenu)}
+                    className="btn-primary flex items-center gap-1.5 text-sm py-2"
+                  >
+                    <Download size={14} />
+                    导出报表
+                  </button>
+                  {showExportMenu && (
+                    <div className="absolute right-0 top-full mt-2 z-50 w-44 glass-card rounded-lg overflow-hidden border border-water-cyan/20">
+                      <button
+                        onClick={() => { exportReport('operation'); setShowExportMenu(false); }}
+                        className="w-full px-4 py-2.5 text-left text-sm text-slate-200 hover:bg-water-cyan/10 transition-colors flex items-center gap-2"
+                      >
+                        <AreaChart size={14} className="text-water-cyan" />
+                        月度运营分析CSV
+                      </button>
+                      <button
+                        onClick={() => { exportReport('energy'); setShowExportMenu(false); }}
+                        className="w-full px-4 py-2.5 text-left text-sm text-slate-200 hover:bg-water-cyan/10 transition-colors flex items-center gap-2"
+                      >
+                        <Zap size={14} className="text-water-yellow" />
+                        能耗成本报表CSV
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 <div className="h-8 w-px bg-water-cyan/20 mx-1" />
 
@@ -625,8 +666,8 @@ export default function Dashboard() {
 
         <section className="shrink-0 grid grid-cols-6 gap-3">
           <StatCard
-            title="今日产水量"
-            value={stats.todayProduction}
+            title="总产水量"
+            value={Math.round(stats.totalProduction)}
             unit="m³"
             trend={2.5}
             trendUp
@@ -636,7 +677,7 @@ export default function Dashboard() {
           />
           <StatCard
             title="平均供水压力"
-            value={stats.currentPressure}
+            value={+stats.avgPressure.toFixed(3)}
             unit="MPa"
             trend={1.2}
             trendUp
@@ -646,7 +687,7 @@ export default function Dashboard() {
           />
           <StatCard
             title="水质达标率"
-            value={stats.waterQualityRate}
+            value={+stats.waterQualityRate.toFixed(1)}
             unit="%"
             trend={0.3}
             trendUp
@@ -656,7 +697,7 @@ export default function Dashboard() {
           />
           <StatCard
             title="巡检完成率"
-            value={stats.inspectionCompleteRate}
+            value={+stats.inspectionRate.toFixed(1)}
             unit="%"
             trend={-1.8}
             trendUp={false}
@@ -665,7 +706,7 @@ export default function Dashboard() {
             sparklineData={sparklineBase.map((v) => v * 0.7)}
           />
           <StatCard
-            title="今日报警数"
+            title="活跃报警数"
             value={stats.activeAlarms}
             unit="条"
             trend={-12.5}
@@ -675,8 +716,8 @@ export default function Dashboard() {
             sparklineData={sparklineBase.map((v) => v * 0.5).reverse()}
           />
           <StatCard
-            title="今日能耗"
-            value={stats.todayEnergy}
+            title="累计能耗"
+            value={Math.round(stats.totalEnergy)}
             unit="kWh"
             trend={3.2}
             trendUp

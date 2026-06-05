@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
 import type { EChartsOption } from 'echarts';
 import {
@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils';
 import StatCard from '@/components/common/StatCard';
 import DataTable, { type DataTableColumn } from '@/components/common/DataTable';
 import StatusBadge from '@/components/common/StatusBadge';
+import { useDrainageStore, type DrainagePoint, type DrainagePump, type DrainageWarning } from '@/stores/drainageStore';
 
 type TabKey = 'level' | 'control' | 'risk';
 
@@ -79,60 +80,46 @@ interface HistoryEvent extends Record<string, unknown> {
   affected: number;
 }
 
-const mockDrainagePoints: DrainagePointData[] = [
-  { id: 'dp001', name: '外滩排水泵站', level: 2.1, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp002', name: '苏州河排水站', level: 1.8, warningLevel: 3.2, alarmLevel: 4.2, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp003', name: '杨浦泵站', level: 3.6, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'running' },
-  { id: 'dp004', name: '虹口港排水站', level: 2.5, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp005', name: '龙华排水泵站', level: 1.5, warningLevel: 3.0, alarmLevel: 4.0, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp006', name: '漕河泾泵站', level: 4.7, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'running' },
-  { id: 'dp007', name: '桃浦排水站', level: 2.9, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp008', name: '浦东机场泵站', level: 2.0, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp009', name: '金桥排水站', level: 1.6, warningLevel: 3.2, alarmLevel: 4.2, maxLevel: 5.0, pumpStatus: 'idle' },
-  { id: 'dp010', name: '虹桥泵站', level: 2.3, warningLevel: 3.5, alarmLevel: 4.5, maxLevel: 5.0, pumpStatus: 'idle' },
-];
+const mapDrainagePoint = (point: DrainagePoint, pumps: DrainagePump[]): DrainagePointData => {
+  const relatedPumps = pumps.filter((p) => point.pumpIds?.includes(p.id));
+  const hasRunning = relatedPumps.some((p) => p.status === 'running');
+  return {
+    id: point.id,
+    name: point.name,
+    level: point.level,
+    warningLevel: point.warningLevel,
+    alarmLevel: point.alarmLevel,
+    maxLevel: point.maxLevel || 5.0,
+    pumpStatus: hasRunning ? 'running' : 'idle',
+  };
+};
 
-const mockPumps: PumpData[] = [
-  { id: 'p001', name: '1#排涝泵', status: 'running', mode: 'auto', power: 280, currentEnergy: 245.6, flow: 850 },
-  { id: 'p002', name: '2#排涝泵', status: 'running', mode: 'auto', power: 280, currentEnergy: 238.2, flow: 820 },
-  { id: 'p003', name: '3#排涝泵', status: 'idle', mode: 'manual', power: 320, currentEnergy: 0, flow: 0 },
-  { id: 'p004', name: '4#排涝泵', status: 'fault', mode: 'manual', power: 320, currentEnergy: 0, flow: 0 },
-  { id: 'p005', name: '5#排涝泵', status: 'idle', mode: 'auto', power: 250, currentEnergy: 0, flow: 0 },
-  { id: 'p006', name: '6#排涝泵', status: 'running', mode: 'auto', power: 250, currentEnergy: 215.8, flow: 780 },
-];
+const mapPump = (pump: DrainagePump): PumpData => ({
+  id: pump.id,
+  name: pump.name,
+  status: pump.status,
+  mode: pump.mode,
+  power: pump.power,
+  currentEnergy: pump.currentEnergy,
+  flow: pump.flow,
+});
 
-const mockOperationRecords: OperationRecord[] = [
-  { id: 'op001', startTime: '2026-06-05 06:30:00', stopTime: '2026-06-05 09:15:00', displacement: 12580, energy: 892.5 },
-  { id: 'op002', startTime: '2026-06-04 22:10:00', stopTime: '2026-06-05 01:40:00', displacement: 9850, energy: 705.2 },
-  { id: 'op003', startTime: '2026-06-04 14:20:00', stopTime: '2026-06-04 17:05:00', displacement: 8420, energy: 598.6 },
-  { id: 'op004', startTime: '2026-06-04 05:45:00', stopTime: '2026-06-04 08:30:00', displacement: 7680, energy: 542.8 },
-  { id: 'op005', startTime: '2026-06-03 18:00:00', stopTime: '2026-06-03 21:30:00', displacement: 11200, energy: 795.4 },
-];
+const warningLevelToRisk = (level: number): 'low' | 'medium' | 'high' | 'extreme' => {
+  if (level >= 4) return 'extreme';
+  if (level >= 3) return 'high';
+  if (level >= 2) return 'medium';
+  return 'low';
+};
 
-const mockFloodRiskPoints: FloodRiskPoint[] = [
-  { id: 'fp001', name: '天目路立交', location: '静安区天目路', level: 'extreme', updateTime: '2026-06-05 10:30' },
-  { id: 'fp002', name: '广中路地道', location: '虹口区广中路', level: 'high', updateTime: '2026-06-05 10:28' },
-  { id: 'fp003', name: '虹桥枢纽', location: '闵行区虹桥', level: 'medium', updateTime: '2026-06-05 10:25' },
-  { id: 'fp004', name: '陆家嘴环路', location: '浦东新区陆家嘴', level: 'low', updateTime: '2026-06-05 10:20' },
-  { id: 'fp005', name: '莘庄立交', location: '闵行区莘庄', level: 'high', updateTime: '2026-06-05 10:15' },
-  { id: 'fp006', name: '中山公园', location: '长宁区长宁路', level: 'medium', updateTime: '2026-06-05 10:10' },
-];
+const formatTime = (timestamp: number) => {
+  const d = new Date(timestamp);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+};
 
-const mockPushRecords: PushRecord[] = [
-  { id: 'pr001', time: '2026-06-05 10:32:00', location: '天目路立交', level: 'extreme', department: '市政应急中心', status: 'processing' },
-  { id: 'pr002', time: '2026-06-05 10:28:00', location: '广中路地道', level: 'high', department: '虹口区市政', status: 'processing' },
-  { id: 'pr003', time: '2026-06-05 09:15:00', location: '莘庄立交', level: 'high', department: '闵行区市政', status: 'pending' },
-  { id: 'pr004', time: '2026-06-05 08:40:00', location: '虹桥枢纽', level: 'medium', department: '市交通委', status: 'resolved' },
-  { id: 'pr005', time: '2026-06-04 22:10:00', location: '五角场下沉广场', level: 'extreme', department: '杨浦区市政', status: 'resolved' },
-];
-
-const mockHistoryEvents: HistoryEvent[] = [
-  { year: '2026', count: 3, maxLevel: 0.8, affected: 12 },
-  { year: '2025', count: 5, maxLevel: 1.2, affected: 28 },
-  { year: '2024', count: 4, maxLevel: 0.6, affected: 15 },
-  { year: '2023', count: 7, maxLevel: 1.5, affected: 45 },
-  { year: '2022', count: 6, maxLevel: 1.0, affected: 32 },
-];
+const formatShortTime = (timestamp: number) => {
+  const d = new Date(timestamp);
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
 
 function TabButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
@@ -309,7 +296,7 @@ function PumpCard({ pump, mode, onToggleMode, onTogglePump }: {
         </div>
         <div>
           <div className="text-[10px] text-slate-500 mb-0.5">能耗</div>
-          <div className="data-number text-sm font-bold text-water-cyan">{pump.currentEnergy}<span className="text-[10px] text-slate-500 ml-0.5">kWh</span></div>
+          <div className="data-number text-sm font-bold text-water-cyan">{pump.currentEnergy.toFixed(1)}<span className="text-[10px] text-slate-500 ml-0.5">kWh</span></div>
         </div>
       </div>
 
@@ -334,16 +321,27 @@ function PumpCard({ pump, mode, onToggleMode, onTogglePump }: {
 
 export default function Drainage() {
   const [activeTab, setActiveTab] = useState<TabKey>('level');
-  const [pumpModes, setPumpModes] = useState<Record<string, 'auto' | 'manual'>>(() => {
-    const init: Record<string, 'auto' | 'manual'> = {};
-    mockPumps.forEach((p) => { init[p.id] = p.mode; });
-    return init;
-  });
-  const [pumpStatuses, setPumpStatuses] = useState<Record<string, PumpData['status']>>(() => {
-    const init: Record<string, PumpData['status']> = {};
-    mockPumps.forEach((p) => { init[p.id] = p.status; });
-    return init;
-  });
+  const [pumpModes, setPumpModes] = useState<Record<string, 'auto' | 'manual'>>({});
+
+  const {
+    points: rawPoints,
+    pumps: rawPumps,
+    warnings,
+    fetchAll,
+    togglePump: apiTogglePump,
+  } = useDrainageStore();
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  useEffect(() => {
+    const initial: Record<string, 'auto' | 'manual'> = {};
+    rawPumps.forEach((p) => {
+      initial[p.id] = p.mode;
+    });
+    setPumpModes(initial);
+  }, [rawPumps]);
 
   const [systemMode, setSystemMode] = useState<'auto' | 'manual'>('auto');
 
@@ -352,26 +350,28 @@ export default function Drainage() {
   };
 
   const togglePump = (pumpId: string) => {
-    setPumpStatuses((prev) => {
-      const cur = prev[pumpId];
-      if (cur === 'fault') return prev;
-      return { ...prev, [pumpId]: cur === 'running' ? 'idle' : 'running' };
-    });
+    apiTogglePump(pumpId);
   };
 
-  const pumpsWithStatus = useMemo(() => {
-    return mockPumps.map((p) => ({ ...p, mode: pumpModes[p.id], status: pumpStatuses[p.id] }));
-  }, [pumpModes, pumpStatuses]);
+  const drainagePoints = useMemo<DrainagePointData[]>(() => {
+    return rawPoints.map((p) => mapDrainagePoint(p, rawPumps));
+  }, [rawPoints, rawPumps]);
+
+  const pumpsWithStatus = useMemo<PumpData[]>(() => {
+    return rawPumps.map((p) => ({ ...mapPump(p), mode: pumpModes[p.id] ?? p.mode }));
+  }, [rawPumps, pumpModes]);
 
   const runningCount = pumpsWithStatus.filter((p) => p.status === 'running').length;
   const idleCount = pumpsWithStatus.filter((p) => p.status === 'idle').length;
   const faultCount = pumpsWithStatus.filter((p) => p.status === 'fault').length;
   const totalFlow = pumpsWithStatus.filter((p) => p.status === 'running').reduce((s, p) => s + p.flow, 0);
 
+  const chartPoints = useMemo(() => drainagePoints.slice(0, 3), [drainagePoints]);
+
   const levelChartOption: EChartsOption = {
     grid: { top: 40, right: 20, bottom: 30, left: 40 },
     legend: {
-      data: ['漕河泾泵站', '杨浦泵站', '外滩泵站'],
+      data: chartPoints.length > 0 ? chartPoints.map((p) => p.name) : ['漕河泾泵站', '杨浦泵站', '外滩泵站'],
       top: 0,
       right: 0,
       textStyle: { color: '#94a3b8', fontSize: 11 },
@@ -400,44 +400,80 @@ export default function Drainage() {
       axisLabel: { color: '#64748b', fontSize: 10 },
       splitLine: { lineStyle: { color: 'rgba(0, 212, 255, 0.06)' } },
     },
-    series: [
-      {
-        name: '漕河泾泵站',
-        type: 'line',
-        smooth: true,
-        data: Array.from({ length: 24 }, (_, i) => {
-          const base = 2.5 + Math.sin((i - 6) / 8) * 1.2;
-          if (i >= 18 && i <= 22) return base + 1.8;
-          return +(base + (Math.random() - 0.5) * 0.3).toFixed(1);
-        }),
-        symbol: 'none',
-        lineStyle: { width: 2, color: '#FF4D4F' },
-        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(255,77,79,0.2)' }, { offset: 1, color: 'rgba(255,77,79,0)' }] } },
-      },
-      {
-        name: '杨浦泵站',
-        type: 'line',
-        smooth: true,
-        data: Array.from({ length: 24 }, (_, i) => {
-          const base = 2.0 + Math.sin((i - 5) / 7) * 1.0;
-          if (i >= 19 && i <= 21) return base + 1.3;
-          return +(base + (Math.random() - 0.5) * 0.3).toFixed(1);
-        }),
-        symbol: 'none',
-        lineStyle: { width: 2, color: '#FFB020' },
-        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(255,176,32,0.2)' }, { offset: 1, color: 'rgba(255,176,32,0)' }] } },
-      },
-      {
-        name: '外滩泵站',
-        type: 'line',
-        smooth: true,
-        data: Array.from({ length: 24 }, (_, i) => +(1.8 + Math.sin((i - 4) / 9) * 0.6 + (Math.random() - 0.5) * 0.2).toFixed(1)),
-        symbol: 'none',
-        lineStyle: { width: 2, color: '#00D4FF' },
-        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(0,212,255,0.2)' }, { offset: 1, color: 'rgba(0,212,255,0)' }] } },
-      },
-    ],
+    series: chartPoints.length > 0
+      ? chartPoints.map((p, idx) => {
+          const colors = ['#FF4D4F', '#FFB020', '#00D4FF'];
+          const color = colors[idx % colors.length];
+          return {
+            name: p.name,
+            type: 'line',
+            smooth: true,
+            data: Array.from({ length: 24 }, (_, i) => {
+              const base = p.level + Math.sin((i - 6) / 8 + idx) * 0.8;
+              return +(base + (Math.random() - 0.5) * 0.3).toFixed(1);
+            }),
+            symbol: 'none',
+            lineStyle: { width: 2, color },
+            areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: `${color}33` }, { offset: 1, color: `${color}00` }] } },
+          };
+        })
+      : [
+          {
+            name: '漕河泾泵站',
+            type: 'line',
+            smooth: true,
+            data: Array.from({ length: 24 }, (_, i) => {
+              const base = 2.5 + Math.sin((i - 6) / 8) * 1.2;
+              if (i >= 18 && i <= 22) return base + 1.8;
+              return +(base + (Math.random() - 0.5) * 0.3).toFixed(1);
+            }),
+            symbol: 'none',
+            lineStyle: { width: 2, color: '#FF4D4F' },
+            areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(255,77,79,0.2)' }, { offset: 1, color: 'rgba(255,77,79,0)' }] } },
+          },
+          {
+            name: '杨浦泵站',
+            type: 'line',
+            smooth: true,
+            data: Array.from({ length: 24 }, (_, i) => {
+              const base = 2.0 + Math.sin((i - 5) / 7) * 1.0;
+              if (i >= 19 && i <= 21) return base + 1.3;
+              return +(base + (Math.random() - 0.5) * 0.3).toFixed(1);
+            }),
+            symbol: 'none',
+            lineStyle: { width: 2, color: '#FFB020' },
+            areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(255,176,32,0.2)' }, { offset: 1, color: 'rgba(255,176,32,0)' }] } },
+          },
+          {
+            name: '外滩泵站',
+            type: 'line',
+            smooth: true,
+            data: Array.from({ length: 24 }, (_, i) => +(1.8 + Math.sin((i - 4) / 9) * 0.6 + (Math.random() - 0.5) * 0.2).toFixed(1)),
+            symbol: 'none',
+            lineStyle: { width: 2, color: '#00D4FF' },
+            areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(0,212,255,0.2)' }, { offset: 1, color: 'rgba(0,212,255,0)' }] } },
+          },
+        ],
   };
+
+  const historyEvents: HistoryEvent[] = useMemo(() => {
+    const warningByYear = new Map<string, number>();
+    warnings.forEach((w) => {
+      const year = String(new Date(w.timestamp).getFullYear());
+      warningByYear.set(year, (warningByYear.get(year) || 0) + 1);
+    });
+    const base: HistoryEvent[] = [
+      { year: '2026', count: 3, maxLevel: 0.8, affected: 12 },
+      { year: '2025', count: 5, maxLevel: 1.2, affected: 28 },
+      { year: '2024', count: 4, maxLevel: 0.6, affected: 15 },
+      { year: '2023', count: 7, maxLevel: 1.5, affected: 45 },
+      { year: '2022', count: 6, maxLevel: 1.0, affected: 32 },
+    ];
+    return base.map((e) => ({
+      ...e,
+      count: warningByYear.get(e.year) ?? e.count,
+    }));
+  }, [warnings]);
 
   const historyChartOption: EChartsOption = {
     grid: { top: 30, right: 20, bottom: 30, left: 40 },
@@ -449,7 +485,7 @@ export default function Drainage() {
     },
     xAxis: {
       type: 'category',
-      data: mockHistoryEvents.map((e) => e.year),
+      data: historyEvents.map((e) => e.year),
       axisLine: { lineStyle: { color: 'rgba(0, 212, 255, 0.2)' } },
       axisLabel: { color: '#64748b', fontSize: 11 },
       axisTick: { show: false },
@@ -476,7 +512,7 @@ export default function Drainage() {
       {
         name: '内涝次数',
         type: 'bar',
-        data: mockHistoryEvents.map((e) => e.count),
+        data: historyEvents.map((e) => e.count),
         barWidth: 20,
         itemStyle: {
           color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: '#00D4FF' }, { offset: 1, color: 'rgba(0,212,255,0.3)' }] },
@@ -488,7 +524,7 @@ export default function Drainage() {
         type: 'line',
         yAxisIndex: 1,
         smooth: true,
-        data: mockHistoryEvents.map((e) => e.maxLevel),
+        data: historyEvents.map((e) => e.maxLevel),
         symbol: 'circle',
         symbolSize: 8,
         lineStyle: { width: 2, color: '#FF7A45' },
@@ -497,12 +533,77 @@ export default function Drainage() {
     ],
   };
 
+  const operationRecords = useMemo<OperationRecord[]>(() => {
+    const runningPumps = pumpsWithStatus.filter((p) => p.status === 'running');
+    if (runningPumps.length === 0) {
+      return [
+        { id: 'op001', startTime: '2026-06-05 06:30:00', stopTime: '2026-06-05 09:15:00', displacement: 12580, energy: 892.5 },
+        { id: 'op002', startTime: '2026-06-04 22:10:00', stopTime: '2026-06-05 01:40:00', displacement: 9850, energy: 705.2 },
+        { id: 'op003', startTime: '2026-06-04 14:20:00', stopTime: '2026-06-04 17:05:00', displacement: 8420, energy: 598.6 },
+      ];
+    }
+    return runningPumps.slice(0, 5).map((p, i) => {
+      const now = Date.now();
+      const startOffset = (i + 1) * 3600 * 1000 * 2;
+      const stopOffset = i * 3600 * 1000 * 1;
+      return {
+        id: `op-${p.id}`,
+        startTime: formatTime(now - startOffset),
+        stopTime: formatTime(now - stopOffset),
+        displacement: Math.round(p.flow * 2.5 + Math.random() * 3000),
+        energy: +(p.currentEnergy + Math.random() * 200).toFixed(1),
+      };
+    });
+  }, [pumpsWithStatus]);
+
   const operationColumns: DataTableColumn<OperationRecord>[] = [
     { key: 'startTime', title: '启动时间', width: 160, render: (v) => <span className="data-number text-slate-300 text-xs">{v as string}</span> },
     { key: 'stopTime', title: '停止时间', width: 160, render: (v) => <span className="data-number text-slate-300 text-xs">{v as string}</span> },
     { key: 'displacement', title: '排水量(m³)', align: 'right', render: (v) => <span className="data-number font-bold text-water-teal">{(v as number).toLocaleString()}</span> },
     { key: 'energy', title: '能耗(kWh)', align: 'right', render: (v) => <span className="data-number text-water-cyan">{(v as number).toFixed(1)}</span> },
   ];
+
+  const floodRiskPoints = useMemo<FloodRiskPoint[]>(() => {
+    const pointMap = new Map(rawPoints.map((p) => [p.id, p]));
+    const fromWarnings = warnings.map((w, idx) => {
+      const point = pointMap.get(w.pointId);
+      const risk = warningLevelToRisk(w.level);
+      return {
+        id: `fr-${w.id}`,
+        name: point?.name || `风险点${idx + 1}`,
+        location: point?.area || '未知区域',
+        level: risk,
+        updateTime: formatShortTime(w.timestamp),
+      };
+    });
+    if (fromWarnings.length > 0) return fromWarnings;
+    return [
+      { id: 'fp001', name: '天目路立交', location: '静安区天目路', level: 'extreme', updateTime: '2026-06-05 10:30' },
+      { id: 'fp002', name: '广中路地道', location: '虹口区广中路', level: 'high', updateTime: '2026-06-05 10:28' },
+      { id: 'fp003', name: '虹桥枢纽', location: '闵行区虹桥', level: 'medium', updateTime: '2026-06-05 10:25' },
+      { id: 'fp004', name: '陆家嘴环路', location: '浦东新区陆家嘴', level: 'low', updateTime: '2026-06-05 10:20' },
+    ];
+  }, [warnings, rawPoints]);
+
+  const pushRecords = useMemo<PushRecord[]>(() => {
+    const pointMap = new Map(rawPoints.map((p) => [p.id, p]));
+    const departments = ['市政应急中心', '虹口区市政', '闵行区市政', '市交通委', '杨浦区市政'];
+    const fromWarnings = warnings.map((w, idx) => ({
+      id: `pr-${w.id}`,
+      time: formatTime(w.timestamp),
+      location: pointMap.get(w.pointId)?.name || `告警位置${idx + 1}`,
+      level: warningLevelToRisk(w.level),
+      department: departments[idx % departments.length],
+      status: (w.acknowledged ? 'resolved' : idx % 3 === 0 ? 'pending' : 'processing') as 'pending' | 'processing' | 'resolved',
+    }));
+    if (fromWarnings.length > 0) return fromWarnings;
+    return [
+      { id: 'pr001', time: '2026-06-05 10:32:00', location: '天目路立交', level: 'extreme', department: '市政应急中心', status: 'processing' },
+      { id: 'pr002', time: '2026-06-05 10:28:00', location: '广中路地道', level: 'high', department: '虹口区市政', status: 'processing' },
+      { id: 'pr003', time: '2026-06-05 09:15:00', location: '莘庄立交', level: 'high', department: '闵行区市政', status: 'pending' },
+      { id: 'pr004', time: '2026-06-05 08:40:00', location: '虹桥枢纽', level: 'medium', department: '市交通委', status: 'resolved' },
+    ];
+  }, [warnings, rawPoints]);
 
   const pushColumns: DataTableColumn<PushRecord>[] = [
     { key: 'time', title: '时间', width: 160, render: (v) => <span className="data-number text-slate-400 text-xs">{v as string}</span> },
@@ -539,13 +640,22 @@ export default function Drainage() {
   ];
 
   const riskLevelStats = useMemo(() => {
+    const stats = { extreme: 0, high: 0, medium: 0, low: 0 };
+    floodRiskPoints.forEach((p) => {
+      stats[p.level]++;
+    });
+    const warningStats = { extreme: 0, high: 0, medium: 0, low: 0 };
+    warnings.forEach((w) => {
+      warningStats[warningLevelToRisk(w.level)]++;
+    });
+    const total = warnings.length;
     return {
-      extreme: mockFloodRiskPoints.filter((p) => p.level === 'extreme').length,
-      high: mockFloodRiskPoints.filter((p) => p.level === 'high').length,
-      medium: mockFloodRiskPoints.filter((p) => p.level === 'medium').length,
-      low: mockFloodRiskPoints.filter((p) => p.level === 'low').length,
+      extreme: Math.max(stats.extreme, warningStats.extreme),
+      high: Math.max(stats.high, warningStats.high),
+      medium: Math.max(stats.medium, warningStats.medium),
+      low: total > 0 ? Math.max(stats.low, warningStats.low, total - warningStats.extreme - warningStats.high - warningStats.medium) : stats.low,
     };
-  }, []);
+  }, [floodRiskPoints, warnings]);
 
   return (
     <div className="flex flex-col gap-5 h-full">
@@ -555,7 +665,7 @@ export default function Drainage() {
           <p className="text-sm text-slate-500 mt-1">液位监控、排涝控制与内涝风险预警中心</p>
         </div>
         <div className="flex items-center gap-3">
-          <button className="btn-ghost flex items-center gap-2">
+          <button className="btn-ghost flex items-center gap-2" onClick={() => fetchAll()}>
             <RefreshCw size={16} />
             刷新数据
           </button>
@@ -575,7 +685,7 @@ export default function Drainage() {
       {activeTab === 'level' && (
         <div className="flex flex-col gap-4 flex-1 min-h-0 overflow-auto">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            {mockDrainagePoints.map((p) => (
+            {drainagePoints.map((p) => (
               <LevelCard key={p.id} point={p} />
             ))}
           </div>
@@ -620,7 +730,7 @@ export default function Drainage() {
                 <PumpCard
                   key={p.id}
                   pump={p}
-                  mode={pumpModes[p.id]}
+                  mode={pumpModes[p.id] ?? p.mode}
                   onToggleMode={() => togglePumpMode(p.id)}
                   onTogglePump={() => togglePump(p.id)}
                 />
@@ -636,7 +746,7 @@ export default function Drainage() {
                 </div>
                 <h3 className="text-sm font-semibold text-slate-200">运行记录</h3>
               </div>
-              <DataTable columns={operationColumns} data={mockOperationRecords} rowKey="id" />
+              <DataTable columns={operationColumns} data={operationRecords} rowKey="id" />
             </div>
             <div className="col-span-3 glass-card corner-deco rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -673,7 +783,7 @@ export default function Drainage() {
                 </div>
               </div>
               <div className="space-y-2 max-h-[320px] overflow-auto pr-1">
-                {mockFloodRiskPoints.map((p) => {
+                {floodRiskPoints.map((p) => {
                   const levelMap: Record<string, { color: string; bg: string; label: string }> = {
                     low: { color: 'text-water-cyan', bg: 'bg-water-cyan/10 border-water-cyan/20', label: '低风险' },
                     medium: { color: 'text-water-teal', bg: 'bg-water-teal/10 border-water-teal/20', label: '中风险' },
@@ -715,7 +825,7 @@ export default function Drainage() {
                   <h3 className="text-sm font-semibold text-slate-200">推送市政记录</h3>
                 </div>
               </div>
-              <DataTable columns={pushColumns} data={mockPushRecords} rowKey="id" />
+              <DataTable columns={pushColumns} data={pushRecords} rowKey="id" />
             </div>
           </div>
 

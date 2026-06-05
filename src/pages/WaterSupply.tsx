@@ -20,66 +20,36 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useWaterStore, type Pump } from '@/stores/waterStore';
+import { useDashboardStore, type PressurePoint } from '@/stores/dashboardStore';
 import StatusBadge from '@/components/common/StatusBadge';
 import DataTable from '@/components/common/DataTable';
 import StatCard from '@/components/common/StatCard';
 
 type SupplyTab = 'pressure' | 'pump' | 'energy';
+type PressureStatus = 'normal' | 'low' | 'high';
 
-interface PressurePointData {
+interface PressurePointView {
   id: string;
   name: string;
   area: string;
   pressure: number;
-  status: 'normal' | 'low' | 'high';
+  status: PressureStatus;
   lastUpdate: string;
   lng: number;
   lat: number;
 }
 
-function genPressurePoints(): PressurePointData[] {
-  const areas = ['东城区', '西城区', '南城区', '北城区', '高新区', '经开区', '老城区', '新城区'];
-  const names = [
-    '市政府监测点', '人民广场监测点', '中心医院监测点', '火车站监测点',
-    '大学城监测点', '工业园监测点', '滨江花园监测点', '奥体中心监测点',
-    '开发区管委会', '物流园区监测点', '古镇景区监测点', '新城CBD监测点',
-  ];
-  return names.map((name, i) => {
-    const base = 0.25 + Math.random() * 0.12;
-    let status: PressurePointData['status'] = 'normal';
-    if (base < 0.22) status = 'low';
-    else if (base > 0.36) status = 'high';
-    return {
-      id: `pp-${(i + 1).toString().padStart(3, '0')}`,
-      name,
-      area: areas[i % areas.length],
-      pressure: +base.toFixed(3),
-      status,
-      lastUpdate: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-      lng: 121.3 + Math.random() * 0.4,
-      lat: 31.0 + Math.random() * 0.4,
-    };
-  });
-}
-
-function genMonthlyEnergy() {
-  const months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
-  return months.map((m, i) => {
-    const seasonal = i >= 5 && i <= 8 ? 55000 : i >= 10 || i <= 1 ? 42000 : 38000;
-    return {
-      month: m,
-      energy: +(seasonal + Math.random() * 8000).toFixed(0),
-      cost: +((seasonal + Math.random() * 8000) * 0.82).toFixed(0),
-    };
-  });
-}
+const mapPressureStatus = (point: PressurePoint): PressureStatus => {
+  if (point.status === 'normal') return 'normal';
+  if (point.pressure < 0.25) return 'low';
+  return 'high';
+};
 
 export default function WaterSupply() {
   const [activeTab, setActiveTab] = useState<SupplyTab>('pressure');
-  const [pressurePoints, setPressurePoints] = useState<PressurePointData[]>(() => genPressurePoints());
   const [pumpModes, setPumpModes] = useState<Record<string, 'auto' | 'manual'>>({});
 
-  const { pumps, togglePump, getPumpEnergyData } = useWaterStore();
+  const { pumps, togglePump, getPumpEnergyData, fetchAll: fetchWaterAll } = useWaterStore();
 
   useEffect(() => {
     const initial: Record<string, 'auto' | 'manual'> = {};
@@ -88,28 +58,41 @@ export default function WaterSupply() {
     });
     setPumpModes(initial);
   }, [pumps]);
+  const {
+    pressurePoints: rawPressurePoints,
+    monthlyEnergy,
+    fetchPressure,
+    fetchMonthlyEnergy,
+  } = useDashboardStore();
+
+  useEffect(() => {
+    fetchWaterAll();
+    fetchPressure();
+    fetchMonthlyEnergy();
+  }, [fetchWaterAll, fetchPressure, fetchMonthlyEnergy]);
 
   useEffect(() => {
     if (activeTab !== 'pressure') return;
     const timer = setInterval(() => {
-      setPressurePoints((prev) =>
-        prev.map((p) => {
-          const delta = (Math.random() - 0.5) * 0.02;
-          const newP = Math.max(0.15, Math.min(0.45, p.pressure + delta));
-          let status: PressurePointData['status'] = 'normal';
-          if (newP < 0.22) status = 'low';
-          else if (newP > 0.36) status = 'high';
-          return {
-            ...p,
-            pressure: +newP.toFixed(3),
-            status,
-            lastUpdate: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          };
-        }),
-      );
-    }, 3000);
+      fetchPressure();
+    }, 5000);
     return () => clearInterval(timer);
-  }, [activeTab]);
+  }, [activeTab, fetchPressure]);
+
+  const pressurePoints = useMemo<PressurePointView[]>(
+    () =>
+      rawPressurePoints.map((p) => ({
+        id: p.id,
+        name: p.name,
+        area: p.area ?? '',
+        lng: p.lng,
+        lat: p.lat,
+        pressure: p.pressure,
+        status: mapPressureStatus(p),
+        lastUpdate: p.lastUpdate,
+      })),
+    [rawPressurePoints],
+  );
 
   const tabs: { key: SupplyTab; label: string; icon: React.ReactNode }[] = [
     { key: 'pressure', label: '压力监控', icon: <Gauge size={16} /> },
@@ -117,11 +100,10 @@ export default function WaterSupply() {
     { key: 'energy', label: '能耗统计', icon: <BarChart3 size={16} /> },
   ];
 
-  const monthlyEnergy = useMemo(() => genMonthlyEnergy(), []);
-  const currentMonthEnergy = monthlyEnergy[5]?.energy ?? 0;
-  const lastMonthEnergy = monthlyEnergy[4]?.energy ?? 0;
-  const yoyEnergy = monthlyEnergy[5]?.energy ?? 0;
-  const lastYearSame = (monthlyEnergy[5]?.energy ?? 0) * 0.95;
+  const currentMonthEnergy = monthlyEnergy[monthlyEnergy.length - 1]?.energy ?? 0;
+  const lastMonthEnergy = monthlyEnergy[monthlyEnergy.length - 2]?.energy ?? currentMonthEnergy;
+  const yoyEnergy = currentMonthEnergy;
+  const lastYearSame = currentMonthEnergy * 0.95;
 
   const pressureStats = useMemo(() => {
     const normal = pressurePoints.filter((p) => p.status === 'normal').length;
@@ -139,9 +121,9 @@ export default function WaterSupply() {
       borderColor: 'rgba(0, 212, 255, 0.3)',
       textStyle: { color: '#e2e8f0' },
       formatter: (params: unknown) => {
-        const p = params as { data?: PressurePointData; value?: number[] };
+        const p = params as { data?: PressurePointView; value?: number[] };
         if (p.data) {
-          const d = p.data as unknown as PressurePointData;
+          const d = p.data as unknown as PressurePointView;
           return `${d.name}<br/>压力: <b>${d.pressure} MPa</b><br/>状态: ${d.status === 'normal' ? '正常' : d.status === 'low' ? '偏低' : '偏高'}`;
         }
         if (p.value) {
@@ -577,7 +559,7 @@ export default function WaterSupply() {
             {pumps.map((pump) => {
               const energyData = getPumpEnergyData(pump.id, 7).map((d) => d.energy);
               const isRunning = pump.status === 'running';
-              const isFault = pump.status === 'maintenance';
+              const isFault = pump.status === 'fault' || pump.status === 'maintenance';
               const statusCfg = pumpStatusConfig(pump.status);
               return (
                 <div
@@ -669,14 +651,14 @@ export default function WaterSupply() {
                       <div className="bg-water-cyan/5 rounded-lg p-2.5 text-center">
                         <div className="text-[10px] text-slate-500 mb-1">功率</div>
                         <div className="data-number text-sm font-bold text-water-cyan">
-                          {pump.power}
+                          {pump.ratedPower ?? pump.power}
                           <span className="text-[10px] text-slate-500 ml-0.5">kW</span>
                         </div>
                       </div>
                       <div className="bg-water-cyan/5 rounded-lg p-2.5 text-center">
                         <div className="text-[10px] text-slate-500 mb-1">能耗</div>
                         <div className="data-number text-sm font-bold text-water-teal">
-                          {(pump.power * (pump.runHours / 1000) || 0).toFixed(1)}
+                          {(pump.currentEnergy ?? pump.totalEnergy ?? 0).toFixed(1)}
                           <span className="text-[10px] text-slate-500 ml-0.5">kWh</span>
                         </div>
                       </div>
